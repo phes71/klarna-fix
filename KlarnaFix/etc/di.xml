@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+
+    <!-- Fix missing order_id on quoteStatus and ensure session keys -->
+    <type name="Klarna\Kp\Controller\Klarna\QuoteStatus">
+        <plugin name="gerrardsbs_klarnafix_quotestatus"
+                type="GerrardSBS\KlarnaFix\Plugin\QuoteStatusFix"
+                sortOrder="999"/>
+        <plugin name="gerrardsbs_klarnafix_quotestatus_keys"
+                type="GerrardSBS\KlarnaFix\Plugin\SessionKeysOnQuoteStatus"
+                sortOrder="1000"/>
+    </type>
+
+    <!-- Ensure success-page session keys are present during Klarna's cookie hop -->
+    <type name="Klarna\Kp\Controller\Klarna\Cookie">
+        <plugin name="gerrardsbs_klarnafix_cookie_keys"
+                type="GerrardSBS\KlarnaFix\Plugin\SessionKeysOnCookie"
+                sortOrder="1000"/>
+        <!-- Short-circuit cookie when already on success to avoid double success navigation -->
+        <plugin name="gerrardsbs_klarnafix_cookie_guard"
+                type="GerrardSBS\KlarnaFix\Plugin\CookieGuard"
+                sortOrder="10"/>
+    </type>
+
+    <!-- Guard guest API call (guest carts) -->
+    <type name="Magento\Checkout\Model\GuestPaymentInformationManagement">
+        <plugin name="gbs_klarnafix_api_guard_guest"
+                type="GerrardSBS\KlarnaFix\Plugin\ApiGuard"
+                sortOrder="10"/>
+    </type>
+
+    <!-- Guard logged-in API call (customer carts) -->
+    <type name="Magento\Checkout\Model\PaymentInformationManagement">
+        <plugin name="gbs_klarnafix_guard_customer_save_payment"
+                type="GerrardSBS\KlarnaFix\Plugin\GuardCustomerSavePayment"
+                sortOrder="10"/>
+    </type>
+
+    <!-- Skip Klarna cookie redirect: point straight to success page -->
+    <type name="Klarna\Kp\Model\ConfigProvider\UrlConfig">
+        <plugin name="gbs_klarna_skip_cookie_redirect"
+                type="GerrardSBS\KlarnaFix\Plugin\UrlConfigSkipCookie"
+                sortOrder="10"/>
+    </type>
+
+</config>
