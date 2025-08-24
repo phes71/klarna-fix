@@ -2,46 +2,100 @@
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
 
-    <!-- Fix missing order_id on quoteStatus and ensure session keys -->
-    <type name="Klarna\Kp\Controller\Klarna\QuoteStatus">
-        <plugin name="gerrardsbs_klarnafix_quotestatus"
-                type="GerrardSBS\KlarnaFix\Plugin\QuoteStatusFix"
-                sortOrder="999"/>
-        <plugin name="gerrardsbs_klarnafix_quotestatus_keys"
-                type="GerrardSBS\KlarnaFix\Plugin\SessionKeysOnQuoteStatus"
-                sortOrder="1000"/>
+    <!-- 1) Throttle Klarna cookie endpoint and force a single success -->
+    <type name="Klarna\Kp\Controller\Klarna\Cookie">
+        <plugin name="gbs_klarna_cookie_guard"
+                type="GerrardSBS\KlarnaFix\Plugin\CookieGuard"
+                sortOrder="10"/>
+        <!-- Ensure success-page keys even if Klarna doesn't set them -->
+        <plugin name="gbs_klarna_keys_after_cookie"
+                type="GerrardSBS\KlarnaFix\Plugin\SessionKeysOnCookie"
+                sortOrder="20"/>
     </type>
 
-    <!-- Ensure success-page session keys are present during Klarna's cookie hop -->
-    <type name="Klarna\Kp\Controller\Klarna\Cookie">
-        <plugin name="gerrardsbs_klarnafix_cookie_keys"
-                type="GerrardSBS\KlarnaFix\Plugin\SessionKeysOnCookie"
-                sortOrder="1000"/>
-        <!-- Short-circuit cookie when already on success to avoid double success navigation -->
-        <plugin name="gerrardsbs_klarnafix_cookie_guard"
-                type="GerrardSBS\KlarnaFix\Plugin\CookieGuard"
+    <!-- If Klarna exposes redirect url in config, point straight to success -->
+    <type name="Klarna\Kp\Model\ConfigProvider\UrlConfig">
+        <plugin name="gbs_klarna_url_skip_cookie"
+                type="GerrardSBS\KlarnaFix\Plugin\UrlConfigSkipCookie"
                 sortOrder="10"/>
     </type>
 
-    <!-- Guard guest API call (guest carts) -->
+    <!-- 2) Guard BOTH managers so ‘payment-information’ doesn’t hit the backend post-redirect -->
     <type name="Magento\Checkout\Model\GuestPaymentInformationManagement">
-        <plugin name="gbs_klarnafix_api_guard_guest"
+        <plugin name="gbs_klarna_api_guard_guest"
+                type="GerrardSBS\KlarnaFix\Plugin\ApiGuard"
+                sortOrder="10"/>
+    </type>
+    <type name="Magento\Checkout\Model\PaymentInformationManagement">
+        <plugin name="gbs_klarna_api_guard_cust"
                 type="GerrardSBS\KlarnaFix\Plugin\ApiGuard"
                 sortOrder="10"/>
     </type>
 
-    <!-- Guard logged-in API call (customer carts) -->
-    <type name="Magento\Checkout\Model\PaymentInformationManagement">
-        <plugin name="gbs_klarnafix_guard_customer_save_payment"
-                type="GerrardSBS\KlarnaFix\Plugin\GuardCustomerSavePayment"
+    <!-- Also enforce keys right after Klarna’s quoteStatus polling finishes -->
+    <type name="Klarna\Kp\Controller\Klarna\QuoteStatus">
+        <plugin name="gbs_klarna_keys_after_quote_status"
+                type="GerrardSBS\KlarnaFix\Plugin\SessionKeysOnQuoteStatus"
                 sortOrder="10"/>
     </type>
+	<type name="Magento\Checkout\Controller\Onepage\Success">
+		<!-- run first: block refresh/share & expire after render -->
+		<plugin name="gbs_klarna_success_access_guard"
+				type="GerrardSBS\KlarnaFix\Plugin\SuccessAccessGuard"
+				sortOrder="5"/>
+		<!-- then bind order for blocks -->
+		<plugin name="gbs_klarna_success_keys"
+				type="GerrardSBS\KlarnaFix\Plugin\SuccessKeys"
+				sortOrder="10"/>
+		<!-- finally, the existing swapper (see B for tightening) -->
+		<plugin name="gbs_klarna_success_guard"
+				type="GerrardSBS\KlarnaFix\Plugin\SuccessGuard"
+				sortOrder="15"/>
+	</type>
+	
+	<type name="Magento\Framework\View\Result\Page">
+    <plugin name="gbs_klarna_success_cleanup_after_render"
+            type="GerrardSBS\KlarnaFix\Plugin\SuccessCleanupAfterRender"
+            sortOrder="10"/>
+</type>
+	
+	<!-- BLOCK plugin: backfill order number/date if session is expired -->
+<type name="Magento\Checkout\Block\Onepage\Success">
+    <plugin name="gbs_klarna_success_view_patch"
+            type="GerrardSBS\KlarnaFix\Plugin\SuccessViewPatch"
+            sortOrder="1"/>
+</type>
+	
+	
+	<!-- reset flag at the start of a fresh checkout -->
+<type name="Magento\Checkout\Controller\Index\Index">
+    <plugin name="gbs_klarna_clear_flag_checkout"
+            type="GerrardSBS\KlarnaFix\Plugin\ClearSuccessFlag" sortOrder="10"/>
+</type>
+<type name="Magento\Checkout\Controller\Cart\Index">
+    <plugin name="gbs_klarna_clear_flag_cart"
+            type="GerrardSBS\KlarnaFix\Plugin\ClearSuccessFlag" sortOrder="10"/>
+</type>
+	<type name="Klarna\Kp\Controller\Klarna\QuoteStatus">
+    <plugin name="gbs_klarna_quote_status_fix"
+            type="GerrardSBS\KlarnaFix\Plugin\QuoteStatusFix"
+            sortOrder="5"/>
+</type>
+	
 
-    <!-- Skip Klarna cookie redirect: point straight to success page -->
-    <type name="Klarna\Kp\Model\ConfigProvider\UrlConfig">
-        <plugin name="gbs_klarna_skip_cookie_redirect"
-                type="GerrardSBS\KlarnaFix\Plugin\UrlConfigSkipCookie"
-                sortOrder="10"/>
-    </type>
+<!-- protect post-order payment info fetch -->
+<type name="Magento\Checkout\Model\PaymentInformationManagement">
+    <plugin name="gbs_klarna_getinfo_guard"
+            type="GerrardSBS\KlarnaFix\Plugin\GetPaymentInfoGuard"
+            sortOrder="20"/>
+</type>
+<type name="Magento\Checkout\Model\GuestPaymentInformationManagement">
+    <plugin name="gbs_klarna_getinfo_guard_guest"
+            type="GerrardSBS\KlarnaFix\Plugin\GetPaymentInfoGuard"
+            sortOrder="20"/>
+</type>
+
+
+
 
 </config>

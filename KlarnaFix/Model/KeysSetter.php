@@ -4,132 +4,84 @@ declare(strict_types=1);
 namespace GerrardSBS\KlarnaFix\Model;
 
 use Magento\Checkout\Model\Session as CheckoutSession;
-use Magento\Quote\Api\CartRepositoryInterface;
 use Magento\Sales\Model\OrderFactory;
+use Magento\Quote\Api\CartRepositoryInterface;
 use Psr\Log\LoggerInterface;
 
 class KeysSetter
 {
     public function __construct(
-        private CheckoutSession $checkoutSession,
+        private CheckoutSession $session,
         private OrderFactory $orderFactory,
-        private CartRepositoryInterface $cartRepository,
+        private CartRepositoryInterface $cartRepo,
         private LoggerInterface $logger
     ) {}
 
-    /**
-     * Ensure all success-related session keys exist.
-     * Returns an array with what was set/found.
-     */
-    public function ensure(): array
+    public function ensure(): void
     {
-        $session = $this->checkoutSession;
+        try {
+            // Prefer the CURRENT active quote first
+            $activeQid = 0;
+            try {
+                $activeQid = (int)($this->session->getQuote()->getId() ?: 0);
+            } catch (\Throwable $e) {}
 
-        // If already fully set, bail early
-        $already =
-            (int)$session->getLastOrderId() &&
-            (string)$session->getLastRealOrderId() !== '' &&
-            (int)$session->getLastQuoteId() &&
-            (int)$session->getLastSuccessQuoteId();
+            $inc = (string)($this->session->getLastRealOrderId() ?: '');
+            $qid = $activeQid
+                ?: (int)($this->session->getLastQuoteId() ?: 0)
+                ?: (int)($this->session->getLastSuccessQuoteId() ?: 0);
 
-        if ($already) {
-            return ['ok' => true, 'reason' => 'already_set'];
-        }
+            $resolved = null;
 
-        $orderId   = (int)($session->getLastOrderId() ?: 0);
-        $increment = (string)($session->getLastRealOrderId() ?: '');
-        $quoteId   = (int)($session->getLastSuccessQuoteId() ?: ($session->getLastQuoteId() ?: $session->getQuoteId() ?: 0));
-
-        // If we only have increment, resolve entity id
-        if (!$orderId && $increment !== '') {
-            $orderId = $this->eidFromIncrement($increment);
-        }
-
-        // If we only have quote id, resolve order from quote
-        if (!$orderId && $quoteId) {
-            // Try order from quote_id
-            $orderId = $this->eidFromQuoteId($quoteId);
-            if ($orderId) {
-                // also fetch increment
-                $increment = $this->incrementFromEntityId($orderId);
-            } else {
-                // Try quote's reserved increment
-                try {
-                    $quote = $this->cartRepository->get($quoteId);
-                    $reserved = (string)$quote->getReservedOrderId();
-                    if ($reserved !== '') {
-                        $orderId   = $this->eidFromIncrement($reserved);
-                        $increment = $reserved ?: $increment;
+            // Try resolve by increment — but ONLY if it matches the active quote (when known)
+            if ($inc !== '') {
+                $o = $this->orderFactory->create()->loadByIncrementId($inc);
+                if ($o->getId()) {
+                    if ($activeQid && (int)$o->getQuoteId() !== $activeQid) {
+                        // Stale increment from previous order – ignore it
+                        $this->session->setLastRealOrderId('');
+                        $inc = '';
+                    } else {
+                        $resolved = $o;
                     }
-                } catch (\Throwable $e) {
-                    $this->logger->warning('[KlarnaFix] KeysSetter failed loading quote', [
-                        'qid' => $quoteId, 'e' => $e->getMessage()
-                    ]);
                 }
             }
-        }
 
-        // If we only have entity id, fetch increment & quote
-        if ($orderId && ($increment === '' || !$quoteId)) {
-            $order = $this->orderFactory->create()->load($orderId);
-            if ($order->getId()) {
-                $increment = $increment !== '' ? $increment : (string)$order->getIncrementId();
-                $quoteId   = $quoteId ?: (int)$order->getQuoteId();
+            // Else resolve by quote id
+            if (!$resolved && $qid) {
+                $o = $this->orderFactory->create()->getCollection()
+                    ->addFieldToFilter('quote_id', $qid)
+                    ->setOrder('entity_id', 'DESC')
+                    ->setPageSize(1)
+                    ->getFirstItem();
+                if ($o && $o->getId()) {
+                    $resolved = $o;
+                }
             }
+
+            if ($resolved) {
+                $this->session->setLastOrderId((int)$resolved->getId());
+                $this->session->setLastRealOrderId((string)$resolved->getIncrementId());
+
+                $oqid = (int)$resolved->getQuoteId();
+                if ($oqid) {
+                    $this->session->setLastQuoteId($oqid);
+                    $this->session->setLastSuccessQuoteId($oqid);
+                }
+            } elseif ($qid) {
+                // Keep quote ids in sync even if order not yet resolvable
+                $this->session->setLastQuoteId($qid);
+                $this->session->setLastSuccessQuoteId($qid);
+            }
+
+            $this->logger->info('[KlarnaFix] KeysSetter ensure', [
+                'order_id' => (int)$this->session->getLastOrderId(),
+                'increment'=> (string)$this->session->getLastRealOrderId(),
+                'quote_id' => (int)$this->session->getLastSuccessQuoteId(),
+                'active_q' => $activeQid,
+            ]);
+        } catch (\Throwable $e) {
+            $this->logger->warning('[KlarnaFix] KeysSetter failed', ['e' => $e->getMessage()]);
         }
-
-        // Write back any keys we could determine
-        if ($orderId) {
-            $session->setLastOrderId($orderId);
-        }
-        if ($increment !== '') {
-            $session->setLastRealOrderId($increment);
-        }
-        if ($quoteId) {
-            $session->setLastQuoteId($quoteId);
-            $session->setLastSuccessQuoteId($quoteId);
-        }
-
-        $ok = (int)$session->getLastOrderId()
-            && (string)$session->getLastRealOrderId() !== ''
-            && (int)$session->getLastQuoteId()
-            && (int)$session->getLastSuccessQuoteId();
-
-        $this->logger->info('[KlarnaFix] KeysSetter ensure', [
-            'ok'        => $ok ? 1 : 0,
-            'order_id'  => $session->getLastOrderId(),
-            'increment' => $session->getLastRealOrderId(),
-            'quote_id'  => $session->getLastQuoteId(),
-            'success_q' => $session->getLastSuccessQuoteId(),
-        ]);
-
-        return [
-            'ok'        => $ok,
-            'order_id'  => (int)$session->getLastOrderId(),
-            'increment' => (string)$session->getLastRealOrderId(),
-            'quote_id'  => (int)$session->getLastQuoteId(),
-        ];
-    }
-
-    private function eidFromIncrement(string $inc): int
-    {
-        $order = $this->orderFactory->create()->loadByIncrementId($inc);
-        return (int)($order && $order->getId() ? $order->getId() : 0);
-    }
-
-    private function eidFromQuoteId(int $qid): int
-    {
-        $order = $this->orderFactory->create()->getCollection()
-            ->addFieldToFilter('quote_id', $qid)
-            ->setOrder('entity_id', 'DESC')
-            ->setPageSize(1)
-            ->getFirstItem();
-        return (int)($order && $order->getId() ? $order->getId() : 0);
-    }
-
-    private function incrementFromEntityId(int $eid): string
-    {
-        $order = $this->orderFactory->create()->load($eid);
-        return (string)($order && $order->getId() ? $order->getIncrementId() : '');
     }
 }

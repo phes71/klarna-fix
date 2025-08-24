@@ -3,32 +3,89 @@ declare(strict_types=1);
 
 namespace GerrardSBS\KlarnaFix\Plugin;
 
-use Klarna\Kp\Controller\Klarna\Cookie as Subject;
+use Klarna\Kp\Controller\Klarna\Cookie;
+use Magento\Checkout\Model\Session as CheckoutSession;
 use Magento\Framework\App\RequestInterface;
-use Magento\Framework\Controller\Result\RawFactory;
+use Magento\Framework\Controller\ResultFactory;
 use Psr\Log\LoggerInterface;
+use GerrardSBS\KlarnaFix\Model\KeysSetter;
 
-/**
- * Prevents a second navigation to the success page caused by Klarna's /checkout/klarna/cookie/
- * when we're already arriving at success. Returns HTTP 204 to stop the redirect chain.
- */
 class CookieGuard
 {
+    private const LOCK_KEY   = 'gbs_klarna_lock_until';
+    private const LOCK_TTL   = 12;
+    private const SUCCESS_TS = 'gbs_success_t';
+    private const SUCCESS_TTL= 15; // seconds
+
     public function __construct(
+        private CheckoutSession  $checkoutSession,
+        private ResultFactory    $resultFactory,
         private RequestInterface $request,
-        private RawFactory $rawFactory,
-        private LoggerInterface $logger
+        private LoggerInterface  $logger,
+        private KeysSetter       $keysSetter
     ) {}
 
-    public function aroundExecute(Subject $subject, \Closure $proceed)
+    public function aroundExecute(Cookie $subject, \Closure $proceed)
     {
-        $ref = (string)($this->request->getServer('HTTP_REFERER') ?? '');
-        if (strpos($ref, '/checkout/onepage/success') !== false) {
-            $this->logger->info('[KlarnaFix] CookieGuard: short-circuit on success referer');
-            $raw = $this->rawFactory->create();
+        $now   = time();
+        $until = (int)($this->checkoutSession->getData(self::LOCK_KEY) ?: 0);
+        $ref   = (string)($this->request->getServer('HTTP_REFERER') ?? '');
+
+        $xrw    = strtolower((string)$this->request->getHeader('X-Requested-With'));
+        $sfm    = (string)$this->request->getHeader('Sec-Fetch-Mode');
+        $accept = (string)$this->request->getHeader('Accept');
+        $isAjax = ($xrw === 'xmlhttprequest')
+               || in_array($sfm, ['cors','no-cors','same-origin'], true)
+               || str_contains($accept, 'application/json');
+
+        // Make sure session keys are consistent first
+        $this->keysSetter->ensure();
+
+        $hasOrder        = (int)$this->checkoutSession->getLastOrderId() > 0;
+        $hasSuccessQuote = (int)$this->checkoutSession->getLastSuccessQuoteId() > 0;
+
+        // Only treat as "success-ready" if it matches current quote or is very fresh
+        $activeQid = 0;
+        try { $activeQid = (int)($this->checkoutSession->getQuote()->getId() ?: 0); } catch (\Throwable $e) {}
+        $lastSuccQ = (int)($this->checkoutSession->getLastSuccessQuoteId() ?: 0);
+
+        $freshTs = (int)($this->checkoutSession->getData(self::SUCCESS_TTL) ?: 0);
+        $fresh   = $freshTs && ($now - $freshTs) < self::SUCCESS_TTL;
+
+        $matchingContext = $fresh || ($activeQid && $lastSuccQ && $activeQid === $lastSuccQ);
+
+        // Respect lock for top-level nav loops
+        if (!$isAjax && $now < $until &&
+            (str_contains($ref, '/checkout/onepage/success') || str_contains($ref, '/redirect'))) {
+            $raw = $this->resultFactory->create(ResultFactory::TYPE_RAW);
             $raw->setHttpResponseCode(204);
+            $this->logger->info('[KlarnaFix] CookieGuard 204 (locked)', ['referer' => $ref, 'until' => $until]);
             return $raw;
         }
+
+        if (($hasOrder || $hasSuccessQuote) && $matchingContext) {
+            $this->checkoutSession->setData(self::LOCK_KEY, $now + self::LOCK_TTL);
+
+            if ($isAjax) {
+                $json = $this->resultFactory->create(ResultFactory::TYPE_JSON);
+                $json->setData(['ok' => true, 'redirect' => '/checkout/onepage/success/']);
+                $this->logger->info('[KlarnaFix] CookieGuard JSON → success', compact('activeQid','lastSuccQ'));
+                return $json;
+            }
+
+            $params = [];
+            $inc = (string)$this->checkoutSession->getLastRealOrderId();
+            if ($inc !== '') {
+                $params['_query'] = ['o' => $inc];
+            }
+
+            $redirect = $this->resultFactory->create(ResultFactory::TYPE_REDIRECT);
+            $redirect->setPath('checkout/onepage/success', $params);
+            $this->logger->info('[KlarnaFix] CookieGuard 302 redirect → success (navigate)', compact('activeQid','lastSuccQ'));
+            return $redirect;
+        }
+
+        // Let Klarna continue (no success context yet for THIS quote)
         return $proceed();
     }
 }

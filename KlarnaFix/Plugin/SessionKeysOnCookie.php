@@ -3,21 +3,19 @@ declare(strict_types=1);
 
 namespace GerrardSBS\KlarnaFix\Plugin;
 
+use Klarna\Kp\Controller\Klarna\Cookie;
 use GerrardSBS\KlarnaFix\Model\KeysSetter;
-use Klarna\Kp\Controller\Klarna\Cookie as KlarnaCookie;
-use Psr\Log\LoggerInterface;
 
+/**
+ * Also enforce keys when Klarna hits /checkout/klarna/cookie.
+ */
 class SessionKeysOnCookie
 {
-    public function __construct(
-        private KeysSetter $keysSetter,
-        private LoggerInterface $logger
-    ) {}
+    public function __construct(private KeysSetter $keysSetter) {}
 
-    public function afterExecute(KlarnaCookie $subject, $result)
+    public function afterExecute(Cookie $subject, $result)
     {
-        $info = $this->keysSetter->ensure();
-        $this->logger->info('[KlarnaFix] after Cookie ensure keys', $info);
+        $this->keysSetter->ensure();
         return $result;
     }
 }

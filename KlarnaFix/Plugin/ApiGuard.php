@@ -4,55 +4,76 @@ declare(strict_types=1);
 namespace GerrardSBS\KlarnaFix\Plugin;
 
 use Magento\Checkout\Model\Session as CheckoutSession;
-use Magento\Quote\Api\Data\AddressInterface;
-use Magento\Quote\Api\Data\PaymentInterface;
+use Magento\Quote\Api\Data\PaymentInterface as PaymentData;
 use Psr\Log\LoggerInterface;
 
 class ApiGuard
 {
+    private const SUCCESS_TS = 'gbs_success_t';
+    private const FRESH_TTL  = 15; // seconds to treat calls as the same "success-leg"
+
     public function __construct(
         private CheckoutSession $checkoutSession,
         private LoggerInterface $logger
     ) {}
 
-    /**
-     * Works for BOTH:
-     *  - Magento\Checkout\Model\PaymentInformationManagement::savePaymentInformationAndPlaceOrder
-     *  - Magento\Checkout\Model\GuestPaymentInformationManagement::savePaymentInformationAndPlaceOrder
-     *
-     * We keep $subject untyped and use ...$args to support both method signatures.
-     */
-    public function aroundSavePaymentInformationAndPlaceOrder(
-        $subject,
-        \Closure $proceed,
-        ...$args
-    ) {
-        // Find the PaymentInterface argument among $args (works for both signatures)
-        $payment = null;
+    private function extractPayment(array $args): ?PaymentData
+    {
         foreach ($args as $a) {
-            if ($a instanceof PaymentInterface) {
-                $payment = $a;
-                break;
+            if ($a instanceof PaymentData) {
+                return $a;
             }
         }
+        return null;
+    }
 
-        if ($payment) {
-            $method = (string)$payment->getMethod();
+    private function isKlarna(?PaymentData $p): bool
+    {
+        $m = (string)($p?->getMethod() ?? '');
+        return $m !== '' && (str_starts_with($m, 'klarna_') || str_starts_with($m, 'kco_'));
+    }
 
-            // Only affect Klarna methods
-            if (str_starts_with($method, 'klarna_')) {
-                $lastOrderId = (int)$this->checkoutSession->getLastOrderId();
-                if ($lastOrderId > 0) {
-                    $this->logger->info('[KlarnaFix] ApiGuard short-circuit savePaymentInformationAndPlaceOrder', [
-                        'method'    => $method,
-                        'returning' => $lastOrderId,
-                    ]);
-                    return $lastOrderId;
-                }
-            }
+    private function isFresh(): bool
+    {
+        $ts = (int)($this->checkoutSession->getData(self::SUCCESS_TS) ?: 0);
+        return $ts && (time() - $ts) < self::FRESH_TTL;
+    }
+
+    /** savePaymentInformation → bool */
+    public function aroundSavePaymentInformation($subject, \Closure $proceed, ...$args)
+    {
+        $payment = $this->extractPayment($args);
+        if (!$this->isKlarna($payment)) {
+            return $proceed(...$args);
         }
 
-        // Normal flow
+        $orderId = (int)($this->checkoutSession->getLastOrderId() ?: 0);
+        if ($orderId > 0 && $this->isFresh()) {
+            $this->logger->info('[KlarnaFix] ApiGuard: skip savePaymentInformation (fresh success leg)', [
+                'order_id' => $orderId
+            ]);
+            return true; // avoid the noisy 404
+        }
+
+        return $proceed(...$args);
+    }
+
+    /** savePaymentInformationAndPlaceOrder → int (order id) */
+    public function aroundSavePaymentInformationAndPlaceOrder($subject, \Closure $proceed, ...$args)
+    {
+        $payment = $this->extractPayment($args);
+        if (!$this->isKlarna($payment)) {
+            return $proceed(...$args);
+        }
+
+        $orderId = (int)($this->checkoutSession->getLastOrderId() ?: 0);
+        if ($orderId > 0 && $this->isFresh()) {
+            $this->logger->info('[KlarnaFix] ApiGuard: short-circuit placeOrder (fresh success leg)', [
+                'order_id' => $orderId
+            ]);
+            return $orderId;
+        }
+
         return $proceed(...$args);
     }
 }
