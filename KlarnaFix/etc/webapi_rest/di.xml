@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+
+     <!-- Intercept the REST controller itself (safe + targeted) -->
+    <type name="Magento\Webapi\Controller\Rest">
+        <plugin name="gbs_webapi_paymentinfo_guard"
+                type="GerrardSBS\KlarnaFix\Plugin\WebapiPaymentInfoGuard"
+                sortOrder="1"/>
+    </type>
+</config>
+

@@ -10,17 +10,26 @@ class ClearSuccessFlag
 {
     public function __construct(
         private CheckoutSession $session,
+		private \Magento\Customer\Model\Session $customerSession, 
         private LoggerInterface $logger
     ) {}
 
     public function beforeExecute($subject): void
-    {
-        // fresh journey → drop previous success state
-        $this->session->unsetData('gbs_success_seen');
-        $this->session->unsetData('gbs_klarna_lock_until');
-        $this->session->unsetData('last_order_id');
-        $this->session->unsetData('last_real_order_id');
-        $this->session->unsetData('last_success_quote_id');
-        $this->logger->info('[KlarnaFix] cleared success flag + last* ids');
-    }
+{
+    // clear Swissup reg hash first
+    $this->customerSession->unsRegistrationPasswordHash();
+
+    // clear our success markers
+    $this->session->unsetData('gbs_success_t');
+    $this->session->unsetData('gbs_success_cart');
+    $this->session->unsetData('gbs_klarna_lock_until');
+	$this->session->unsetData('gbs_autologin_done');
+    // clear Magento last* ids
+    $this->session->setLastOrderId(null);
+    $this->session->setLastRealOrderId(null);
+    $this->session->setLastQuoteId(null);          // ← missing
+    $this->session->setLastSuccessQuoteId(null);
+
+    $this->logger->info('[KlarnaFix] cleared success flag + last* ids + reg-hash');
+}
 }

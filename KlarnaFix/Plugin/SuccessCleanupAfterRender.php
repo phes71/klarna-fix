@@ -27,7 +27,7 @@ class SuccessCleanupAfterRender
             // consume the tag and expire success context AFTER HTML was sent
             $this->session->unsetData('gbs_success_pending_cleanup');
             $this->session->setData('gbs_success_t', time()); // helps CookieGuard/refresh lock
-
+			$this->session->unsetData('gbs_autologin_done'); 
             $this->session->setLastOrderId(null);
             $this->session->setLastRealOrderId(null);
             $this->session->setLastQuoteId(null);

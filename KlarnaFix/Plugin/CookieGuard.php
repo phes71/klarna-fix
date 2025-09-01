@@ -41,15 +41,15 @@ class CookieGuard
         // Make sure session keys are consistent first
         $this->keysSetter->ensure();
 
-        $hasOrder        = (int)$this->checkoutSession->getLastOrderId() > 0;
-        $hasSuccessQuote = (int)$this->checkoutSession->getLastSuccessQuoteId() > 0;
+       	$hasOrder        = (int)$this->checkoutSession->getLastOrderId() > 0;
+    	$hasSuccessQuote = (int)$this->checkoutSession->getLastSuccessQuoteId() > 0;
 
         // Only treat as "success-ready" if it matches current quote or is very fresh
         $activeQid = 0;
         try { $activeQid = (int)($this->checkoutSession->getQuote()->getId() ?: 0); } catch (\Throwable $e) {}
         $lastSuccQ = (int)($this->checkoutSession->getLastSuccessQuoteId() ?: 0);
 
-        $freshTs = (int)($this->checkoutSession->getData(self::SUCCESS_TTL) ?: 0);
+        $freshTs = (int)($this->checkoutSession->getData(self::SUCCESS_TS) ?: 0);
         $fresh   = $freshTs && ($now - $freshTs) < self::SUCCESS_TTL;
 
         $matchingContext = $fresh || ($activeQid && $lastSuccQ && $activeQid === $lastSuccQ);
@@ -64,26 +64,21 @@ class CookieGuard
         }
 
         if (($hasOrder || $hasSuccessQuote) && $matchingContext) {
-            $this->checkoutSession->setData(self::LOCK_KEY, $now + self::LOCK_TTL);
+			// arm the short lock and stamp "fresh success" NOW (before we navigate)
+			$this->checkoutSession->setData(self::LOCK_KEY, $now + self::LOCK_TTL);
+			$this->checkoutSession->setData(self::SUCCESS_TS, $now);
+			if ($isAjax) {
+				$json = $this->resultFactory->create(ResultFactory::TYPE_JSON);
+				$json->setData(['ok' => true, 'redirect' => '/checkout/onepage/success/']);
+				$this->logger->info('[KlarnaFix] CookieGuard JSON → success');
+				return $json;
+			}
 
-            if ($isAjax) {
-                $json = $this->resultFactory->create(ResultFactory::TYPE_JSON);
-                $json->setData(['ok' => true, 'redirect' => '/checkout/onepage/success/']);
-                $this->logger->info('[KlarnaFix] CookieGuard JSON → success', compact('activeQid','lastSuccQ'));
-                return $json;
-            }
-
-            $params = [];
-            $inc = (string)$this->checkoutSession->getLastRealOrderId();
-            if ($inc !== '') {
-                $params['_query'] = ['o' => $inc];
-            }
-
-            $redirect = $this->resultFactory->create(ResultFactory::TYPE_REDIRECT);
-            $redirect->setPath('checkout/onepage/success', $params);
-            $this->logger->info('[KlarnaFix] CookieGuard 302 redirect → success (navigate)', compact('activeQid','lastSuccQ'));
-            return $redirect;
-        }
+			$redirect = $this->resultFactory->create(ResultFactory::TYPE_REDIRECT);
+			$redirect->setPath('checkout/onepage/success'); // no shareable ?o= anymore
+			$this->logger->info('[KlarnaFix] CookieGuard 302 redirect → success (navigate)');
+			return $redirect;
+		}
 
         // Let Klarna continue (no success context yet for THIS quote)
         return $proceed();

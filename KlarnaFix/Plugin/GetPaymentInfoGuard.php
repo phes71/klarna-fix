@@ -5,17 +5,13 @@ namespace GerrardSBS\KlarnaFix\Plugin;
 
 use Magento\Checkout\Api\Data\PaymentDetailsInterfaceFactory;
 use Magento\Checkout\Model\Session as CheckoutSession;
+use Magento\Framework\Exception\NoSuchEntityException;
 use Psr\Log\LoggerInterface;
 
-/**
- * Firecheckout sometimes calls getPaymentInformation after redirect.
- * If we *just* placed an order, return an empty, valid PaymentDetails
- * instead of letting it 404 due to an inactive/missing quote.
- */
 class GetPaymentInfoGuard
 {
-    private const SUCCESS_TS = 'gbs_success_t'; // set by SuccessKeys
-    private const FRESH_TTL  = 45;              // seconds
+    private const SUCCESS_TS = 'gbs_success_t'; // primed in CookieGuard + SuccessKeys
+    private const FRESH_TTL  = 60;              // seconds; keep modest
 
     public function __construct(
         private CheckoutSession $checkoutSession,
@@ -23,20 +19,66 @@ class GetPaymentInfoGuard
         private LoggerInterface $logger
     ) {}
 
-    // Works for both customer and guest managers; signatures differ so we use variadic.
+    /** Shared predicate */
+    private function shouldShortCircuit(?string $cartId): bool
+    {
+        $freshTs     = (int)($this->checkoutSession->getData(self::SUCCESS_TS) ?: 0);
+        $lastOrderId = (int)($this->checkoutSession->getLastOrderId() ?: 0);
+        $successCart = (string)($this->checkoutSession->getData('gbs_success_cart') ?? '');
+
+        $isFresh  = $freshTs && (time() - $freshTs) < self::FRESH_TTL;
+        $matches  = $cartId && $successCart && hash_equals($successCart, $cartId);
+
+        $this->logger->info('[KlarnaFix] GetInfoGuard predicate', [
+            'cartId'      => $cartId,
+            'hasOrder'    => $lastOrderId > 0,
+            'isFresh'     => $isFresh,
+            'cartMatches' => $matches,
+        ]);
+
+        return ($lastOrderId > 0) || $isFresh || $matches;
+    }
+
+    
     public function aroundGetPaymentInformation($subject, \Closure $proceed, ...$args)
     {
-        $freshTs = (int)($this->checkoutSession->getData(self::SUCCESS_TS) ?: 0);
-        $lastId  = (int)($this->checkoutSession->getLastOrderId() ?: 0);
+        // arg[0] is cartId for guest; empty for customer (me)
+        $cartId = (string)($args[0] ?? '');
 
-        if ($lastId > 0 && $freshTs && (time() - $freshTs) < self::FRESH_TTL) {
-            $this->logger->info('[KlarnaFix] GetInfoGuard: returning empty details (fresh success)', [
-                'order_id' => $lastId,
-                'guest'    => is_string($args[0] ?? null),
-            ]);
-            return $this->detailsFactory->create(); // valid, empty PaymentDetailsInterface
+        $this->logger->info('[KlarnaFix] GetPaymentInfoGuard hit: getPaymentInformation via ' . get_class($subject));
+
+
+        if ($this->shouldShortCircuit($cartId)) {
+            $this->logger->info('[KlarnaFix] GetInfoGuard → empty PaymentDetails (getPaymentInformation)');
+            return $this->detailsFactory->create();
         }
 
-        return $proceed(...$args);
+        try {
+            return $proceed(...$args);
+        } catch (NoSuchEntityException $e) {
+            $this->logger->info('[KlarnaFix] GetInfoGuard swallowed NSEE (getPaymentInformation)');
+            return $this->detailsFactory->create();
+        }
+    }
+
+    
+    public function aroundGetPaymentDetails($subject, \Closure $proceed, ...$args)
+    {
+        // arg[0] is cartId
+        $cartId = (string)($args[0] ?? '');
+
+        $this->logger->info('[KlarnaFix] GetPaymentInfoGuard hit: getPaymentDetails');
+
+        if ($this->shouldShortCircuit($cartId)) {
+            $this->logger->info('[KlarnaFix] GetInfoGuard → empty PaymentDetails (getPaymentDetails)');
+            return $this->detailsFactory->create();
+        }
+
+        try {
+            return $proceed(...$args);
+        } catch (NoSuchEntityException $e) {
+            $this->logger->info('[KlarnaFix] GetInfoGuard swallowed NSEE (getPaymentDetails)');
+            return $this->detailsFactory->create();
+        }
     }
 }
