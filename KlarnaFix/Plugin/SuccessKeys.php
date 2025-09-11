@@ -22,11 +22,12 @@ class SuccessKeys
 
     public function beforeExecute(Success $subject): void
     {
-        // Ensure last* IDs are present in session
+        // Always try to ensure keys for ANY payment method.
         $this->keysSetter->ensure();
 
         try {
             $orderId = (int)($this->checkoutSession->getLastOrderId() ?: 0);
+
             if ($orderId > 0) {
                 $order = $this->orderRepository->get($orderId);
 
@@ -58,14 +59,16 @@ class SuccessKeys
                     'quote_id'  => $order->getQuoteId(),
                 ]);
             } else {
-                // No session order â†’ core Success controller should redirect to cart
-                $this->logger->warning('[KlarnaFix] SuccessKeys: no lastOrderId in session on success');
+                $this->logger->warning('[KlarnaFix] SuccessKeys: no lastOrderId in session on success', [
+                    'lastRealOrderId' => (string)$this->checkoutSession->getLastRealOrderId(),
+                    'lastQuoteId'     => (int)$this->checkoutSession->getLastQuoteId(),
+                ]);
             }
         } catch (\Throwable $e) {
             $this->logger->critical('[KlarnaFix] SuccessKeys registry bind failed: ' . $e->getMessage());
         }
 
-        // Prime the â€œfresh successâ€ timestamp used by CookieGuard
+        // Prime the “fresh success” timestamp used by CookieGuard
         $this->checkoutSession->setData('gbs_success_t', time());
         $this->logger->info('[KlarnaFix] SuccessKeys primed success timestamp');
     }

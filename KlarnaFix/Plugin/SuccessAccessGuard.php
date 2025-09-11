@@ -1,5 +1,4 @@
 <?php
-// app/code/GerrardSBS/KlarnaFix/Plugin/SuccessAccessGuard.php
 declare(strict_types=1);
 
 namespace GerrardSBS\KlarnaFix\Plugin;
@@ -7,7 +6,6 @@ namespace GerrardSBS\KlarnaFix\Plugin;
 use Magento\Checkout\Controller\Onepage\Success;
 use Magento\Checkout\Model\Session as CheckoutSession;
 use Magento\Framework\Controller\ResultFactory;
-use Magento\Framework\App\RequestInterface;
 use Psr\Log\LoggerInterface;
 
 class SuccessAccessGuard
@@ -15,13 +13,31 @@ class SuccessAccessGuard
     public function __construct(
         private CheckoutSession $session,
         private ResultFactory $resultFactory,
-        private RequestInterface $request,
         private LoggerInterface $logger
     ) {}
 
+    private function isKlarna(?string $code): bool
+    {
+        if (!$code) return false;
+        $code = strtolower($code);
+        return $code === 'klarna_pay_now'
+            || $code === 'klarna_pay_later'
+            || $code === 'klarna_slice_it'
+            || str_starts_with($code, 'klarna');
+    }
+
     public function aroundExecute(Success $subject, \Closure $proceed)
     {
-        // allow only if we actually have a success context
+        $order = $this->session->getLastRealOrder();
+        $method = $order && $order->getPayment() ? (string)$order->getPayment()->getMethod() : '';
+
+        // Non-Klarna: let Magento (and gateways like Clearpay/Braintree) do their thing
+        if (!$this->isKlarna($method)) {
+            $this->logger->info('[KlarnaFix] SuccessAccessGuard: bypass (non-Klarna)');
+            return $proceed();
+        }
+
+        // Klarna only: require real success context
         $has = (int)$this->session->getLastOrderId() > 0
             || (string)$this->session->getLastRealOrderId() !== '';
 
@@ -31,7 +47,7 @@ class SuccessAccessGuard
                 ->setPath('checkout/cart');
         }
 
-        // tag this response; the cleanup plugin will clear AFTER render
+        // Mark for cleanup AFTER render (Klarna only)
         $this->session->setData('gbs_success_pending_cleanup', 1);
 
         return $proceed();

@@ -18,7 +18,16 @@
                 type="GerrardSBS\KlarnaFix\Plugin\UrlConfigSkipCookie"
                 sortOrder="10"/>
     </type>
-
+	<type name="Magento\Checkout\Model\ShippingInformationManagement">
+		<plugin name="gbs_persist_reg_intent_shipping"
+				type="GerrardSBS\KlarnaFix\Plugin\PersistRegistrationIntent"
+				sortOrder="4"/>
+	</type>
+	<type name="Magento\Checkout\Model\GuestShippingInformationManagement">
+		<plugin name="gbs_persist_reg_intent_shipping_guest"
+				type="GerrardSBS\KlarnaFix\Plugin\PersistRegistrationIntent"
+				sortOrder="4"/>
+	</type>
     <!-- Guard managers (post-order chatter) -->
     <type name="Magento\Checkout\Model\GuestPaymentInformationManagement">
         <plugin name="gbs_klarna_api_guard_guest"

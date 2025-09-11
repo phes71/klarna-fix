@@ -10,26 +10,19 @@ class ClearSuccessFlag
 {
     public function __construct(
         private CheckoutSession $session,
-		private \Magento\Customer\Model\Session $customerSession, 
         private LoggerInterface $logger
     ) {}
 
-    public function beforeExecute($subject): void
-{
-    // clear Swissup reg hash first
-    $this->customerSession->unsRegistrationPasswordHash();
+   public function beforeExecute($subject): void
+    {
+        // Clear only our own flags. DO NOT clear Magento's last* IDs here.
+        // Some gateways (e.g., Clearpay) briefly route via Cart/Checkout
+        // before success; clearing last* would break the success context.
+        $this->session->unsetData('gbs_success_t');
+        $this->session->unsetData('gbs_success_cart');
+        $this->session->unsetData('gbs_klarna_lock_until');
+        $this->session->unsetData('gbs_autologin_done');
 
-    // clear our success markers
-    $this->session->unsetData('gbs_success_t');
-    $this->session->unsetData('gbs_success_cart');
-    $this->session->unsetData('gbs_klarna_lock_until');
-	$this->session->unsetData('gbs_autologin_done');
-    // clear Magento last* ids
-    $this->session->setLastOrderId(null);
-    $this->session->setLastRealOrderId(null);
-    $this->session->setLastQuoteId(null);          // ← missing
-    $this->session->setLastSuccessQuoteId(null);
-
-    $this->logger->info('[KlarnaFix] cleared success flag + last* ids + reg-hash');
-}
+        $this->logger->info('[KlarnaFix] cleared success flag + last* ids (kept Magento last* intact)');
+    }
 }
